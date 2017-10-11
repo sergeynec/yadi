@@ -1,11 +1,16 @@
 package com.lezhnin.yadi.api;
 
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
+import static com.lezhnin.yadi.api.ServiceReference.serviceReference;
 import java.util.function.Supplier;
+import javax.annotation.Nonnull;
 
 public interface ServiceLocator {
 
-    @Nullable
-    <T> Supplier<T> locate(@Nonnull Class<T> beanType);
+    @Nonnull
+    <T> Supplier<T> locate(@Nonnull ServiceReference<T> serviceReference);
+
+    @Nonnull
+    default <T> Supplier<T> locate(@Nonnull final Class<T> serviceClass) {
+        return locate(serviceReference(serviceClass));
+    }
 }

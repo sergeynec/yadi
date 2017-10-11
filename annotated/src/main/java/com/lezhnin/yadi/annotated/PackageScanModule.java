@@ -1,67 +1,78 @@
 package com.lezhnin.yadi.annotated;
 
-import static com.lezhnin.yadi.simple.ConstructorDependency.constructor;
-import static com.lezhnin.yadi.simple.MethodDependency.method;
-import static com.lezhnin.yadi.simple.SimpleServiceProvider.provider;
+import static com.lezhnin.yadi.annotated.NamedClassReference.namedClassReference;
+import static com.lezhnin.yadi.api.Dependency.ConstructorDependency.constructor;
+import static com.lezhnin.yadi.api.ServiceDefinition.serviceDefinition;
 import static java.util.Arrays.stream;
 import static java.util.Objects.requireNonNull;
-import static java.util.stream.Stream.concat;
-import static java.util.stream.Stream.of;
+import com.lezhnin.yadi.api.Dependency;
+import com.lezhnin.yadi.api.ServiceDefinition;
+import com.lezhnin.yadi.api.ServiceFinder;
 import com.lezhnin.yadi.api.ServiceLocator;
-import com.lezhnin.yadi.simple.ServiceDependency;
+import com.lezhnin.yadi.api.ServiceReference;
 import com.lezhnin.yadi.simple.SimpleModule;
-import java.util.Optional;
+import java.lang.reflect.Constructor;
 import java.util.Set;
+import java.util.function.Function;
 import javax.annotation.Nonnull;
-import javax.inject.Inject;
 import javax.inject.Named;
 import org.reflections.Reflections;
 
 public class PackageScanModule extends SimpleModule {
 
     private final String packagePrefix;
+    private final Function<Class<?>, Constructor<?>> constructorFinder;
+    private final Function<Class<?>, Dependency[]> postConstructDependencyFinder;
+    private final Function<Class<?>, ServiceDefinition<?>[]> serviceFromMethodFinder;
 
-    protected PackageScanModule(@Nonnull final String packagePrefix, @Nonnull ServiceLocator... parents) {
+    protected PackageScanModule(@Nonnull final String packagePrefix,
+                                final Function<Class<?>, Constructor<?>> constructorFinder,
+                                final Function<Class<?>, Dependency[]> postConstructDependencyFinder,
+                                final Function<Class<?>, ServiceDefinition<?>[]> serviceFromMethodFinder, @Nonnull final ServiceFinder... parents) {
         super(parents);
         this.packagePrefix = requireNonNull(packagePrefix);
+        this.constructorFinder = constructorFinder;
+        this.postConstructDependencyFinder = postConstructDependencyFinder;
+        this.serviceFromMethodFinder = serviceFromMethodFinder;
+        registerAnnotations();
     }
 
-    public static ServiceLocator fromPackage(@Nonnull String prefix, @Nonnull ServiceLocator... parents) {
-        return new PackageScanModule(prefix, parents);
+    public static ServiceLocator fromPackage(@Nonnull final String prefix, @Nonnull final ServiceFinder... parents) {
+        return new PackageScanModule(
+                prefix,
+                new ConstructorFinder(),
+                new PostConstructDependencyFinder(),
+                new ServiceFromMethodFinder(),
+                parents
+        );
     }
 
-    public static ServiceLocator fromPackage(@Nonnull Package pkg, @Nonnull ServiceLocator... parents) {
-        return new PackageScanModule(pkg.getName(), parents);
+    public static ServiceLocator fromPackage(@Nonnull final Package pkg, @Nonnull final ServiceFinder... parents) {
+        return new PackageScanModule(
+                pkg.getName(),
+                new ConstructorFinder(),
+                new PostConstructDependencyFinder(),
+                new ServiceFromMethodFinder(),
+                parents
+        );
     }
 
-    @Override
     @SuppressWarnings("unchecked")
-    protected void doBind() {
+    private void registerAnnotations() {
         final Reflections reflections = new Reflections(packagePrefix);
         final Set<Class<?>> namedClasses = reflections.getTypesAnnotatedWith(Named.class);
-        for (Class<?> namedClass : namedClasses) {
-            bind(nameOf(namedClass)).to(provider(namedClass, findDependencies(namedClass)));
+        for (final Class<?> namedClass : namedClasses) {
+            final ServiceReference reference = namedClassReference(namedClass);
+            final Constructor<?> namedConstructor = constructorFinder.apply(namedClass);
+            final ServiceReference<?>[] parameters = stream(namedConstructor.getParameterTypes())
+                    .map(NamedClassReference::namedClassReference)
+                    .toArray(ServiceReference<?>[]::new);
+            accept(serviceDefinition(
+                    namedClassReference(namedClass),
+                    constructor(reference, namedConstructor, parameters),
+                    postConstructDependencyFinder.apply(namedClass)
+            ));
+            stream(serviceFromMethodFinder.apply(namedClass)).forEach(this);
         }
-    }
-
-    private String nameOf(final Class<?> namedClass) {
-        return Optional.ofNullable(namedClass.getAnnotation(Named.class))
-                       .filter(named -> !named.value().isEmpty())
-                       .map(Named::value)
-                       .orElse(namedClass.getName());
-    }
-
-    private ServiceDependency[] findDependencies(final Class<?> annotatedServiceClass) {
-        return concat(
-                concat(
-                        stream(annotatedServiceClass.getConstructors())
-                                .filter(c -> c.getDeclaredAnnotation(Inject.class) != null)
-                                .map(c -> constructor(c.getParameterTypes())),
-                        stream(annotatedServiceClass.getMethods())
-                                .filter(d -> d.getDeclaredAnnotation(Inject.class) != null)
-                                .map(d -> method(d, d.getParameterTypes()))
-                ),
-                of(constructor())
-        ).toArray(ServiceDependency[]::new);
     }
 }
